@@ -669,15 +669,20 @@ nfsstat3 CNFS3Prog::ProcedureREADDIR(void)
 	char *path;
 	cookie3 cookie;
 	cookieverf3 cookieverf;
+	cookieverf3 currentCookieVerf;
 	count3 count;
 	post_op_attr dir_attributes;
 	fileid3 fileid;
 	filename3 name;
 	bool eof;
+	bool valueFollows;
 	nfsstat3 stat;
 	char filePath[MAXPATHLEN];
 	int handle;
 	struct _finddata_t fileinfo;
+	unsigned int entries;
+	bool partialDir;
+	uint32 estimatedBytes;
 
 	PrintLog("READDIR");
 	path = GetPath();
@@ -686,40 +691,76 @@ nfsstat3 CNFS3Prog::ProcedureREADDIR(void)
 	Read(&count);
 	stat = CheckFile(path);
 
+	currentCookieVerf = 0;
+	entries = 0;
+	partialDir = false;
 	if (stat == NFS3_OK)
 	{
 		dir_attributes.attributes_follow = GetFileAttributes(path, &dir_attributes.attributes);
 		if (!dir_attributes.attributes_follow)
 			stat = NFS3ERR_IO;
+		else
+			currentCookieVerf = (cookieverf3)dir_attributes.attributes.mtime.seconds;
+	}
+
+	if (stat == NFS3_OK && cookie != 0 && cookieverf != currentCookieVerf)
+	{
+		stat = NFS3ERR_BAD_COOKIE;
 	}
 
 	Write(&stat);
 	Write(&dir_attributes);
 	if (stat == NFS3_OK)
 	{
-		Write(&cookieverf);
+		Write(&currentCookieVerf);
 		sprintf(filePath, "%s\\*", path);
-		cookie = 0;
-		eof = false;
 		handle = _findfirst(filePath, &fileinfo);
-		if (handle)
+		eof = true;
+		valueFollows = false;
+		if (handle && handle != -1)
 		{
-			do
+			estimatedBytes = 0;
+			while (1)
 			{
-				if (cookie > 0)
-					Write(&eof);  //eof
+				if (strcmp(fileinfo.name, ".") == 0 || strcmp(fileinfo.name, "..") == 0)
+				{
+					if (_findnext(handle, &fileinfo) != 0)
+						break;
+					continue;
+				}
+				if (entries < (unsigned int)cookie)
+				{
+					++entries;
+					if (_findnext(handle, &fileinfo) != 0)
+						break;
+					continue;
+				}
+				estimatedBytes += sizeof(uint64) + sizeof(uint32) + strlen(fileinfo.name);
+				if (count != 0 && estimatedBytes >= (uint32)count)
+				{
+					partialDir = true;
+					eof = false;
+					break;
+				}
 				sprintf(filePath, "%s\\%s", path, fileinfo.name);
 				fileid = GetFileID(filePath);
-				Write(&fileid);  //file id
+				valueFollows = true;
+				Write(&valueFollows);
+				Write(&fileid);
 				name.Set(fileinfo.name);
-				Write(&name);  //name
-				++cookie;
-				Write(&cookie);  //cookie
-			} while (_findnext(handle, &fileinfo) == 0);
+				Write(&name);
+				++entries;
+				cookie = (cookie3)entries;
+				Write(&cookie);
+				if (_findnext(handle, &fileinfo) != 0)
+					break;
+			}
 			_findclose(handle);
 		}
-		eof = true;
-		Write(&eof);  //eof
+		valueFollows = false;
+		Write(&valueFollows);
+		Write(&eof);
+		(void)partialDir;
 	}
 	return stat;
 }
@@ -729,6 +770,7 @@ nfsstat3 CNFS3Prog::ProcedureREADDIRPLUS(void)
 	char *path;
 	cookie3 cookie;
 	cookieverf3 cookieverf;
+	cookieverf3 currentCookieVerf;
 	count3 dircount, maxcount;
 	post_op_attr dir_attributes;
 	fileid3 fileid;
@@ -736,12 +778,14 @@ nfsstat3 CNFS3Prog::ProcedureREADDIRPLUS(void)
 	post_op_attr name_attributes;
 	post_op_fh3 name_handle;
 	bool eof;
+	bool valueFollows;
 	nfsstat3 stat;
 	char filePath[MAXPATHLEN];
-	int handle, nFound;
+	int handle;
 	struct _finddata_t fileinfo;
-	unsigned int i, j;
-	bool bFollows;
+	unsigned int entries;
+	bool partialDir;
+	uint32 estimatedBytes;
 
 	PrintLog("READDIRPLUS");
 	path = GetPath();
@@ -751,56 +795,81 @@ nfsstat3 CNFS3Prog::ProcedureREADDIRPLUS(void)
 	Read(&maxcount);
 	stat = CheckFile(path);
 
+	currentCookieVerf = 0;
+	entries = 0;
+	partialDir = false;
 	if (stat == NFS3_OK)
 	{
 		dir_attributes.attributes_follow = GetFileAttributes(path, &dir_attributes.attributes);
 		if (!dir_attributes.attributes_follow)
 			stat = NFS3ERR_IO;
+		else
+			currentCookieVerf = (cookieverf3)dir_attributes.attributes.mtime.seconds;
+	}
+
+	if (stat == NFS3_OK && cookie != 0 && cookieverf != currentCookieVerf)
+	{
+		stat = NFS3ERR_BAD_COOKIE;
 	}
 
 	Write(&stat);
 	Write(&dir_attributes);
 	if (stat == NFS3_OK)
 	{
-		Write(&cookieverf);
+		Write(&currentCookieVerf);
 		sprintf(filePath, "%s\\*", path);
 		handle = _findfirst(filePath, &fileinfo);
 		eof = true;
-		if (handle)
+		valueFollows = false;
+		if (handle && handle != -1)
 		{
-			nFound = 0;
-			for (i = (unsigned int)cookie; i > 0; i--)
-				nFound = _findnext(handle, &fileinfo);
-			if (nFound == 0)
+			estimatedBytes = 0;
+			while (1)
 			{
-				bFollows = true;
-				j = 10;
-				do
+				if (strcmp(fileinfo.name, ".") == 0 || strcmp(fileinfo.name, "..") == 0)
 				{
-					Write(&bFollows);  //value follows
-					sprintf(filePath, "%s\\%s", path, fileinfo.name);
-					fileid = GetFileID(filePath);
-					Write(&fileid);  //file id
-					name.Set(fileinfo.name);
-					Write(&name);  //name
-					++cookie;
-					Write(&cookie);  //cookie
-					name_attributes.attributes_follow = GetFileAttributes(filePath, &name_attributes.attributes);
-					Write(&name_attributes);
-					name_handle.handle_follows = GetFileHandle(filePath, &name_handle.handle);
-					Write(&name_handle);
-					if (--j == 0)
-					{
-						eof = false;
+					if (_findnext(handle, &fileinfo) != 0)
 						break;
-					}
-				} while (_findnext(handle, &fileinfo) == 0);
+					continue;
+				}
+				if (entries < (unsigned int)cookie)
+				{
+					++entries;
+					if (_findnext(handle, &fileinfo) != 0)
+						break;
+					continue;
+				}
+				estimatedBytes += sizeof(uint64) + sizeof(uint32) + strlen(fileinfo.name);
+				if (maxcount != 0 && estimatedBytes >= (uint32)maxcount)
+				{
+					partialDir = true;
+					eof = false;
+					break;
+				}
+				sprintf(filePath, "%s\\%s", path, fileinfo.name);
+				fileid = GetFileID(filePath);
+				valueFollows = true;
+				Write(&valueFollows);
+				Write(&fileid);
+				name.Set(fileinfo.name);
+				Write(&name);
+				++entries;
+				cookie = (cookie3)entries;
+				Write(&cookie);
+				name_attributes.attributes_follow = GetFileAttributes(filePath, &name_attributes.attributes);
+				Write(&name_attributes);
+				name_handle.handle_follows = GetFileHandle(filePath, &name_handle.handle);
+				Write(&name_handle);
+				if (_findnext(handle, &fileinfo) != 0)
+					break;
 			}
 			_findclose(handle);
 		}
-		bFollows = false;
-		Write(&bFollows);  //value follows
-		Write(&eof);  //eof
+		valueFollows = false;
+		Write(&valueFollows);
+		Write(&eof);
+		(void)partialDir;
+		(void)dircount;
 	}
 	return stat;
 }
