@@ -63,10 +63,12 @@ char *CMountProg::GetClientAddr(int nIndex)
 	for (i = 0; i < MOUNT_NUM_MAX; i++)
 	{
 		if (m_pClientAddr[i] != NULL)
+		{
 			if (nIndex == 0)
 				return m_pClientAddr[i];  //client address
 			else
 				--nIndex;
+		}
 	}
 	return NULL;
 }
