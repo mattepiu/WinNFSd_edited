@@ -192,7 +192,10 @@ static void start(char *path, char *pathAlias)
 	if (bSuccess)
 	{
 		localHost = gethostbyname("");
-		printf("Local IP = %s\n", inet_ntoa (*(struct in_addr *)*localHost->h_addr_list));  //local address
+		printf("Local IPs =");
+		for (char **p = localHost->h_addr_list; p != NULL && *p != NULL; p++)
+			printf(" %s", inet_ntoa(*(struct in_addr *)*p));
+		printf("\n");
 		inputCommand();  //wait for commands
 	}
 

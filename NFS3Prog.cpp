@@ -387,6 +387,9 @@ nfsstat3 CNFS3Prog::ProcedureSETATTR(void)
 nfsstat3 CNFS3Prog::ProcedureLOOKUP(void)
 {
 	char *path;
+	char *sep;
+	static char parentPath[MAXPATHLEN + 1];
+	size_t parentLen;
 	nfs_fh3 object;
 	post_op_attr obj_attributes;
 	post_op_attr dir_attributes;
@@ -402,6 +405,17 @@ nfsstat3 CNFS3Prog::ProcedureLOOKUP(void)
 		obj_attributes.attributes_follow = GetFileAttributes(path, &obj_attributes.attributes);
 	}
 	dir_attributes.attributes_follow = false;
+	if (path != NULL)
+	{
+		sep = strrchr(path, '\\');
+		if (sep != NULL && sep != path)
+		{
+			parentLen = (size_t)(sep - path);
+			memcpy(parentPath, path, parentLen);
+			parentPath[parentLen] = '\0';
+			dir_attributes.attributes_follow = GetFileAttributes(parentPath, &dir_attributes.attributes);
+		}
+	}
 
 	Write(&stat);
 	if (stat == NFS3_OK)
