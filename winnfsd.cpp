@@ -54,6 +54,7 @@ static void printAbout(void)
 	printf("Network File System server for Windows\n");
 	printf("Copyright (C) 2005 Ming-Yang Kao\n");
 	printf("Edited in 2011 by ZeWaren\n");
+	printf("Edited in 2026 by Matteo Azzali\n");
 	printLine();
 }
 
