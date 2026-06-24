@@ -168,4 +168,5 @@ GPL — see `LICENSE` if present, or the upstream [WinNFSd](http://sourceforge.n
 
 Copyright (C) 2005 Ming-Yang Kao.
 Edited in 2011 by ZeWaren.
-NFSv3 compliance fixes in this fork; see `FixPlan.md` and `READDIR_fix.md` for the working notes.
+Edited in 2026 by Matteo Azzali to expand compliance for read clients (i.e.: Kodi).
+NFSv3 compliance fixes in this fork.
