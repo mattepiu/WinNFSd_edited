@@ -455,6 +455,7 @@ nfsstat3 CNFS3Prog::ProcedureREAD(void)
 {
 	char *path;
 	offset3 offset;
+	size3 filesize;
 	count3 count;
 	post_op_attr file_attributes;
 	bool eof;
@@ -470,12 +471,63 @@ nfsstat3 CNFS3Prog::ProcedureREAD(void)
 
 	if (stat == NFS3_OK)
 	{
-		data.SetSize(count);
 		pFile = fopen(path, "rb");
-		fseek(pFile, (long)offset, SEEK_SET);
-		count = fread(data.contents, sizeof(char), count, pFile);
-		eof = fgetc(pFile) == EOF;
-		fclose(pFile);
+		if (pFile == NULL)
+		{
+			stat = NFS3ERR_IO;
+		}
+		else
+		{
+			/* Determine the file size from the open handle, so files larger than
+			 * 2 GiB are measured correctly and we avoid shadowing the local
+			 * `nfsstat3 stat` variable with a libc stat() call. */
+#ifdef _WIN32
+			if (_fseeki64(pFile, 0, SEEK_END) != 0)
+#else
+			if (fseeko64(pFile, 0, SEEK_END) != 0)
+#endif
+			{
+				fclose(pFile);
+				pFile = NULL;
+				stat = NFS3ERR_IO;
+			}
+			else
+			{
+#ifdef _WIN32
+				filesize = (size3)_ftelli64(pFile);
+#else
+				filesize = (size3)ftello64(pFile);
+#endif
+			}
+		}
+		if (stat == NFS3_OK && pFile != NULL)
+		{
+			/* Use the 64-bit seek API so files larger than 2 GiB work. */
+#ifdef _WIN32
+			if (_fseeki64(pFile, (__int64)offset, SEEK_SET) != 0)
+#else
+			if (fseeko64(pFile, (off64_t)offset, SEEK_SET) != 0)
+#endif
+			{
+				fclose(pFile);
+				pFile = NULL;
+				stat = NFS3ERR_IO;
+			}
+		}
+		if (stat == NFS3_OK && pFile != NULL)
+		{
+			data.SetSize(count);
+			count = fread(data.contents, sizeof(char), count, pFile);
+			fclose(pFile);
+
+			/*
+			 * eof per RFC 1813 §3.3.6: TRUE iff (offset + count) is equal to
+			 * the size of the file. Using the real file size (not a speculative
+			 * fgetc probe) avoids one extra byte of I/O per chunk and is exact
+			 * for the 0-byte-read and exact-multiple cases.
+			 */
+			eof = (offset + (offset3)count) >= filesize;
+		}
 	}
 	file_attributes.attributes_follow = false;
 
@@ -914,7 +966,7 @@ nfsstat3 CNFS3Prog::ProcedureFSINFO(void)
 			wtpref = 4096;
 			wtmult = 512;
 			dtpref = 8192;
-			maxfilesize = 0x7FFFFFFF;
+			maxfilesize = (size3)0x7FFFFFFFFFFFFFFFULL;  // NTFS: server now honours 64-bit READ offsets
 			time_delta.seconds = 1;
 			time_delta.nseconds = 0;
 			properties = FSF3_CANSETTIME;
@@ -1171,10 +1223,22 @@ bool CNFS3Prog::GetFileHandle(char *path, nfs_fh3 *pObject)
 
 bool CNFS3Prog::GetFileAttributes(char *path, fattr3 *pAttr)
 {
+	/*
+	 * Use the explicit 64-bit stat struct on Windows so st_size is guaranteed
+	 * 64-bit regardless of the toolchain's default 'struct stat' width. Kodi
+	 * shows file sizes/durations from fattr3.size, and media files routinely
+	 * exceed 4 GiB — a 32-bit st_size would silently truncate those.
+	 * Off-Windows (POSIX) the regular struct stat already uses a 64-bit off_t.
+	 */
+#ifdef _WIN32
+	struct _stat64 data;
+	if (_stat64(path, &data) != 0)
+		return false;
+#else
 	struct stat data;
-
 	if (stat(path, &data) != 0)
 		return false;
+#endif
 	switch (data.st_mode & S_IFMT)
 	{
 		case S_IFREG:

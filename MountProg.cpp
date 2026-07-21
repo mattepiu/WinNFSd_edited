@@ -117,7 +117,8 @@ void CMountProg::ProcedureMNT(void)
 		{
 			m_pOutStream->Write(NFS3_FHSIZE);  //length
 			m_pOutStream->Write(GetFileHandle(path), NFS3_FHSIZE);  //fhandle
-			m_pOutStream->Write(0);  //flavor
+			m_pOutStream->Write(1);  //auth_flavors<>: count
+			m_pOutStream->Write(1);  //auth_flavors<>: AUTH_UNIX (flavour 1)
 		}
 		++m_nMountNum;
 
@@ -135,11 +136,13 @@ void CMountProg::ProcedureMNT(void)
 
 void CMountProg::ProcedureUMNT(void)
 {
-	char *path;
 	int i;
 
 	PrintLog("UMNT");
-	path = GetPath();
+	/* GetPath() is called for its side effect only: it consumes the dirpath
+	 * argument (and trailing XDR padding) off the request stream so the reply
+	 * is framed correctly. UMNT unmounts by client address, not by path. */
+	(void)GetPath();
 	PrintLog(" from %s", m_pParam->pRemoteAddr);
 
 	for (i = 0; i < MOUNT_NUM_MAX; i++)

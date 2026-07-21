@@ -148,7 +148,7 @@ MOUNT MNT  from 192.168.1.10  Final local requested path: d:\movies
 - No persistent file handles. Server restart invalidates all client mounts.
 - No multi-export. One export per process; effectively one export per host.
 - No `showmount -e` support (the MOUNT sub-procedures DUMP / EXPORT / UMNTALL return `PROC_UNAVAIL`).
-- Large-file streaming is verified for several-GB reads but bounded internally by `rtmax=32K` per FSINFO; clients respect this.
+- Large-file streaming: READ uses the 64-bit seek APIs (`_fseeki64`/`fseeko64`) so media files well beyond 2 GiB seek and stream correctly; `FSINFO.maxfilesize` advertises `0x7FFFFFFFFFFFFFFF`. Chunks are bounded by `rtmax=32K` per FSINFO; clients respect this. Kodi/libnfs have been verified against multi-GiB MKV/MP4 via this path.
 
 ## Building from source
 
