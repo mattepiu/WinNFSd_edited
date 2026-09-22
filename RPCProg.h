@@ -25,6 +25,7 @@ typedef struct
 {
 	unsigned int nVersion;
 	unsigned int nProc;
+	unsigned int nType;   /* SOCK_STREAM / SOCK_DGRAM of the request */
 	char *pRemoteAddr;
 } ProcessParam;
 

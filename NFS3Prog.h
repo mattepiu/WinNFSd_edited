@@ -33,6 +33,7 @@ public:
 	opaque(uint32 len);
 	virtual ~opaque();
 	virtual void SetSize(uint32 len);
+	void SetSize(uint32 len, bool bClear);
 };
 
 class nfs_fh3 : public opaque
@@ -188,6 +189,7 @@ public:
 
 protected:
 	unsigned long m_nUID, m_nGID;
+	unsigned int m_nType;
 	IInputStream *m_pInStream;
 	IOutputStream *m_pOutStream;
 	ProcessParam *m_pParam;
@@ -237,6 +239,7 @@ private:
 	char *GetPath(void);
 	char *GetFullPath(void);
 	nfsstat3 CheckFile(char *path);
+	uint32 GetRTMax(void);
 	bool GetFileHandle(char *path, nfs_fh3 *pObject);
 	bool GetFileAttributes(char *path, fattr3 *pAttr);
 };
