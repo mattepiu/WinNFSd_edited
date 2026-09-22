@@ -130,6 +130,16 @@ MOUNT MNT  from 192.168.1.10  Final local requested path: d:\movies
 - **Cookie verifier (READDIR / READDIRPLUS).** The verifier is derived from the directory's `mtime`. Modifying a directory invalidates outstanding cookies. Killing the server mid-listing and restarting also invalidates cookies.
 - **Async write.** Every WRITE is committed synchronously (`committed=FILE_SYNC`); the verifier is constant `0`. Clients receive truthful completion data.
 
+## Performance (media streaming)
+
+The read path is tuned for a mediacenter client that streams long files with thousands of small READs:
+
+- **Persistent open-file cache.** The last 8 streamed files are kept open (LRU). Each READ becomes a seek + read instead of an open/read/close, which avoids re-resolving the path, re-evaluating ACLs, and — crucially on Windows — re-triggering the real-time antivirus on-access scan on every 32 KiB chunk. Files are opened with `FILE_FLAG_SEQUENTIAL_SCAN` (Windows read-ahead, the exact access pattern of playback) and `FILE_SHARE_DELETE` (a movie can still be deleted/renamed while it is playing).
+- **Size cached at open.** The `eof` flag is computed from a size captured once when the file is opened, so no seek-to-end is issued per request. `eof` remains spec-exact (empty files, exact-multiple chunks, short tails, `offset >= size`).
+- **Per-transport read size.** FSINFO advertises `rtmax` = 512 KiB over TCP (the default Kodi/libnfs/kernel transport) and 32 KiB over UDP (RFC 1813 §3.3.19 permits a per-transport value). Larger TCP reads mean far fewer round trips while streaming; UDP stays small so a reply is never a huge, fragmentation-prone datagram. READ clamps any client request to the advertised maximum, so a misbehaving client can neither exhaust memory nor overflow the 1 MiB socket buffer.
+- **Correct large reads.** READ uses 64-bit file offsets (`SetFilePointerEx`) and `_stat64` for attributes, so media files larger than 2/4 GiB seek, stream, and report their size correctly.
+- **Reliable TCP replies.** The socket send path loops until the whole reply is transmitted, so a large READ response can never be silently truncated by a partial `send()`.
+
 ## Troubleshooting
 
 | Symptom | Likely cause | Fix |
