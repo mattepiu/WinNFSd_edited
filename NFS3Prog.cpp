@@ -6,6 +6,16 @@
 #include <sys/stat.h>
 #include <assert.h>
 
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+/* windows.h maps the token GetFileAttributes onto GetFileAttributesA/W; this
+ * class has a member of that name, so drop the macro. */
+#ifdef GetFileAttributes
+#undef GetFileAttributes
+#endif
+
 enum
 {
 	NFSPROC3_NULL = 0,
@@ -115,6 +125,18 @@ enum
 	EXCLUSIVE = 2
 };
 
+/*
+ * Maximum READ size advertised by FSINFO and enforced by READ. RFC 1813
+ * §3.3.19 explicitly permits advertising different transfer sizes depending
+ * on the transport the request arrived on. TCP (the transport Kodi/libnfs and
+ * the Linux kernel client use by default) gets a large read size, so a stream
+ * needs far fewer round trips; UDP stays at the classic 32 KiB so a reply is
+ * never a huge, fragmentation-prone datagram. Both are comfortably inside the
+ * 1 MiB socket buffer (CSocketStream::MAXDATA).
+ */
+#define NFS3_RTMAX_TCP  (512 * 1024)
+#define NFS3_RTMAX_UDP  (32 * 1024)
+
 opaque::opaque()
 {
 	length = 0;
@@ -134,10 +156,16 @@ opaque::~opaque()
 
 void opaque::SetSize(uint32 len)
 {
+	SetSize(len, true);
+}
+
+void opaque::SetSize(uint32 len, bool bClear)
+{
 	delete[] contents;
 	length = len;
 	contents = new unsigned char[length];
-	memset(contents, 0, length);
+	if (bClear)
+		memset(contents, 0, length);
 }
 
 nfs_fh3::nfs_fh3() : opaque(NFS3_FHSIZE)
@@ -172,9 +200,109 @@ void filename3::Set(char *str)
 
 typedef nfsstat3(CNFS3Prog::*PPROC)(void);
 
+/*
+ * Read-side open-file cache — the media-streaming fast path.
+ *
+ * A media client (e.g. Kodi) streams a file by issuing a long series of READ
+ * requests (up to rtmax — 512 KiB over TCP, 32 KiB over UDP): thousands of
+ * reads per file. Reopening the file for every request is the dominant
+ * cost on Windows — each open re-resolves the path, re-evaluates ACLs, and,
+ * with real-time antivirus (Microsoft Defender), triggers an on-access scan.
+ *
+ * Keeping the most-recently-streamed files open turns every READ into a bare
+ * seek + read, and caching the size at open time means the `eof` flag needs no
+ * extra seek-to-end. Opening with FILE_FLAG_SEQUENTIAL_SCAN lets the Windows
+ * cache manager read ahead, which is exactly the access pattern of playback;
+ * FILE_SHARE_DELETE keeps the file deletable/renamable while it is streamed.
+ *
+ * All RPC processing runs under the server's socket mutex (see
+ * CRPCServer::SocketReceived), so this cache is only ever touched from a
+ * single thread at a time and needs no locking of its own.
+ */
+#define READCACHE_SIZE 8
+
+typedef struct
+{
+	bool   used;
+	char   path[MAXPATHLEN + 1];
+	HANDLE handle;   /* INVALID_HANDLE_VALUE when the slot is empty */
+	size3  size;     /* size captured when the file was opened */
+	uint32 tick;     /* LRU stamp */
+} READCACHE_ENTRY;
+
+static READCACHE_ENTRY g_ReadCache[READCACHE_SIZE];
+static uint32 g_ReadCacheTick = 0;
+
+static void ReadCacheFlush(READCACHE_ENTRY *pEntry)
+{
+	if (pEntry->used && pEntry->handle != INVALID_HANDLE_VALUE)
+		CloseHandle(pEntry->handle);
+	pEntry->handle = INVALID_HANDLE_VALUE;
+	pEntry->used = false;
+	pEntry->path[0] = '\0';
+}
+
+static READCACHE_ENTRY *ReadCacheAcquire(const char *path)
+{
+	READCACHE_ENTRY *pSlot = NULL;
+	READCACHE_ENTRY *pEntry;
+	HANDLE handle;
+	LARGE_INTEGER li;
+	int i;
+
+	/* Reuse the entry that already holds this file. */
+	for (i = 0; i < READCACHE_SIZE; i++)
+	{
+		pEntry = &g_ReadCache[i];
+		if (pEntry->used && strcmp(pEntry->path, path) == 0)
+		{
+			pEntry->tick = ++g_ReadCacheTick;
+			return pEntry;
+		}
+	}
+
+	/* Otherwise take a free slot, else the least-recently-used one. */
+	for (i = 0; i < READCACHE_SIZE; i++)
+	{
+		pEntry = &g_ReadCache[i];
+		if (!pEntry->used)
+		{
+			pSlot = pEntry;
+			break;
+		}
+		if (pSlot == NULL || pEntry->tick < pSlot->tick)
+			pSlot = pEntry;
+	}
+	if (pSlot == NULL)
+		return NULL;
+
+	ReadCacheFlush(pSlot);
+
+	handle = CreateFileA(path, GENERIC_READ,
+	                     FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+	                     NULL, OPEN_EXISTING,
+	                     FILE_ATTRIBUTE_NORMAL | FILE_FLAG_SEQUENTIAL_SCAN, NULL);
+	if (handle == INVALID_HANDLE_VALUE)
+		return NULL;
+	if (!GetFileSizeEx(handle, &li))
+	{
+		CloseHandle(handle);
+		return NULL;
+	}
+
+	strncpy(pSlot->path, path, MAXPATHLEN);
+	pSlot->path[MAXPATHLEN] = '\0';
+	pSlot->handle = handle;
+	pSlot->size = (size3)li.QuadPart;
+	pSlot->used = true;
+	pSlot->tick = ++g_ReadCacheTick;
+	return pSlot;
+}
+
 CNFS3Prog::CNFS3Prog() : CRPCProg()
 {
 	m_nUID = m_nGID = 0;
+	m_nType = 0;
 }
 
 CNFS3Prog::~CNFS3Prog()
@@ -203,6 +331,7 @@ int CNFS3Prog::Process(IInputStream *pInStream, IOutputStream *pOutStream, Proce
 	m_pInStream = pInStream;
 	m_pOutStream = pOutStream;
 	m_pParam = pParam;
+	m_nType = pParam->nType;
 	m_nResult = PRC_OK;
 	try
 	{
@@ -455,78 +584,62 @@ nfsstat3 CNFS3Prog::ProcedureREAD(void)
 {
 	char *path;
 	offset3 offset;
-	size3 filesize;
 	count3 count;
 	post_op_attr file_attributes;
 	bool eof;
 	opaque data;
 	nfsstat3 stat;
-	FILE *pFile;
+	READCACHE_ENTRY *pEntry;
+	LARGE_INTEGER li;
+	DWORD nRead;
 
 	PrintLog("READ");
 	path = GetPath();
 	Read(&offset);
 	Read(&count);
+	/* Never allocate or emit more than the advertised per-transport maximum. */
+	if (count > GetRTMax())
+		count = GetRTMax();
 	stat = CheckFile(path);
 
 	if (stat == NFS3_OK)
 	{
-		pFile = fopen(path, "rb");
-		if (pFile == NULL)
+		/* One open per streamed file, reused across every chunk. */
+		pEntry = ReadCacheAcquire(path);
+		if (pEntry == NULL)
 		{
 			stat = NFS3ERR_IO;
 		}
 		else
 		{
-			/* Determine the file size from the open handle, so files larger than
-			 * 2 GiB are measured correctly and we avoid shadowing the local
-			 * `nfsstat3 stat` variable with a libc stat() call. */
-#ifdef _WIN32
-			if (_fseeki64(pFile, 0, SEEK_END) != 0)
-#else
-			if (fseeko64(pFile, 0, SEEK_END) != 0)
-#endif
+			li.QuadPart = (LONGLONG)offset;
+			if (!SetFilePointerEx(pEntry->handle, li, NULL, FILE_BEGIN))
 			{
-				fclose(pFile);
-				pFile = NULL;
+				ReadCacheFlush(pEntry);
 				stat = NFS3ERR_IO;
 			}
 			else
 			{
-#ifdef _WIN32
-				filesize = (size3)_ftelli64(pFile);
-#else
-				filesize = (size3)ftello64(pFile);
-#endif
+				/* Read straight into the wire buffer; nothing to zero-fill. */
+				data.SetSize(count, false);
+				if (!ReadFile(pEntry->handle, data.contents, count, &nRead, NULL))
+				{
+					ReadCacheFlush(pEntry);
+					stat = NFS3ERR_IO;
+				}
+				else
+				{
+					count = (count3)nRead;
+					data.length = count;
+					/*
+					 * eof per RFC 1813 §3.3.6: TRUE iff (offset + count) is equal to
+					 * the size of the file. The size was captured once at open time,
+					 * so no seek-to-end is needed per request. Exact for empty files,
+					 * exact-multiple chunks, short tails, and offset >= size.
+					 */
+					eof = (offset + (offset3)count) >= pEntry->size;
+				}
 			}
-		}
-		if (stat == NFS3_OK && pFile != NULL)
-		{
-			/* Use the 64-bit seek API so files larger than 2 GiB work. */
-#ifdef _WIN32
-			if (_fseeki64(pFile, (__int64)offset, SEEK_SET) != 0)
-#else
-			if (fseeko64(pFile, (off64_t)offset, SEEK_SET) != 0)
-#endif
-			{
-				fclose(pFile);
-				pFile = NULL;
-				stat = NFS3ERR_IO;
-			}
-		}
-		if (stat == NFS3_OK && pFile != NULL)
-		{
-			data.SetSize(count);
-			count = fread(data.contents, sizeof(char), count, pFile);
-			fclose(pFile);
-
-			/*
-			 * eof per RFC 1813 §3.3.6: TRUE iff (offset + count) is equal to
-			 * the size of the file. Using the real file size (not a speculative
-			 * fgetc probe) avoids one extra byte of I/O per chunk and is exact
-			 * for the 0-byte-read and exact-multiple cases.
-			 */
-			eof = (offset + (offset3)count) >= filesize;
 		}
 	}
 	file_attributes.attributes_follow = false;
@@ -959,8 +1072,8 @@ nfsstat3 CNFS3Prog::ProcedureFSINFO(void)
 		obj_attributes.attributes_follow = GetFileAttributes(path, &obj_attributes.attributes);
 		if (obj_attributes.attributes_follow)
 		{
-			rtmax = 32768;
-			rtpref = 32768;
+			rtmax = GetRTMax();
+			rtpref = rtmax;
 			rtmult = 512;
 			wtmax = 4096;
 			wtpref = 4096;
@@ -1213,6 +1326,11 @@ nfsstat3 CNFS3Prog::CheckFile(char *path)
 	if (!FileExists(path))
 		return NFS3ERR_NOENT;
 	return NFS3_OK;
+}
+
+uint32 CNFS3Prog::GetRTMax(void)
+{
+	return (m_nType == SOCK_STREAM) ? NFS3_RTMAX_TCP : NFS3_RTMAX_UDP;
 }
 
 bool CNFS3Prog::GetFileHandle(char *path, nfs_fh3 *pObject)

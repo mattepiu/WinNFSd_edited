@@ -134,6 +134,7 @@ int CRPCServer::Process(int nType, IInputStream *pInStream, IOutputStream *pOutS
 		pOutStream->Write(SUCCESS);  //this value may be modified later if process failed
 		param.nVersion = header.vers;
 		param.nProc = header.proc;
+		param.nType = (unsigned int)nType;
 		param.pRemoteAddr = pRemoteAddr;
 		nResult = m_pProgTable[header.prog - MIN_PROG_NUM]->Process(pInStream, pOutStream, &param);  //process rest input data by program
 

@@ -64,13 +64,34 @@ void CSocket::Close(void)
 
 void CSocket::Send(void)
 {
+	int nTotal, nSent;
+
 	if (m_Socket == INVALID_SOCKET)
 		return;
 
-	if (m_nType == SOCK_STREAM)
-		send(m_Socket, (const char *)m_SocketStream.GetOutput(), m_SocketStream.GetOutputSize(), 0);
-	else if (m_nType == SOCK_DGRAM)
-		sendto(m_Socket, (const char *)m_SocketStream.GetOutput(), m_SocketStream.GetOutputSize(), 0, (struct sockaddr *)&m_RemoteAddr, sizeof(struct sockaddr));
+	nTotal = (int)m_SocketStream.GetOutputSize();
+	if (nTotal > 0)
+	{
+		if (m_nType == SOCK_STREAM)
+		{
+			/*
+			 * TCP send() may accept only part of the buffer (especially for the
+			 * large READ replies this server now emits), so loop until every
+			 * byte is on the wire. A short send would truncate the RPC record
+			 * and desynchronise the client's stream.
+			 */
+			nSent = 0;
+			while (nSent < nTotal)
+			{
+				int n = send(m_Socket, (const char *)m_SocketStream.GetOutput() + nSent, nTotal - nSent, 0);
+				if (n <= 0)
+					break;  // connection error/closed
+				nSent += n;
+			}
+		}
+		else if (m_nType == SOCK_DGRAM)
+			sendto(m_Socket, (const char *)m_SocketStream.GetOutput(), nTotal, 0, (struct sockaddr *)&m_RemoteAddr, sizeof(struct sockaddr));
+	}
 	m_SocketStream.Reset();  //clear output buffer
 }
 
