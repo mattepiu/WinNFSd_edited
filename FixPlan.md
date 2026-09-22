@@ -22,6 +22,18 @@ Optimization of the read path for a mediacenter client streaming video. Files to
 | Per-transport `rtmax` (TCP 512 KiB, UDP 32 KiB), threaded via `ProcessParam.nType` | Far fewer READ round trips when streaming over TCP; RFC 1813 §3.3.19 permits per-transport values. |
 | `READ` clamps `count` to `GetRTMax()` | Robustness: a misbehaving client cannot force a huge allocation or overflow the 1 MiB socket buffer. |
 | `CSocket::Send` loops until the full reply is sent | Correctness prerequisite for large replies: TCP `send()` may be partial; a short send would truncate the RPC record. |
+| TCP receive-side framing (`CSocketStream::HasCompleteRecord` + `CompactInput`, `CSocket::Run`) | A TCP byte stream can split one RPC record across `recv()` calls or coalesce several; accumulate until a complete record is buffered and leave any partial tail for the next read. |
+| `TCP_NODELAY` on accepted TCP sockets | Avoid Nagle/delayed-ACK latency on the many small request/response exchanges of a stream. |
+
+### Crash fix: 64-bit directory-search handle (2026-07-18)
+
+Found by runtime testing: **READDIR/READDIRPLUS crashed the server intermittently** on the 64-bit build. `_findfirst` returns `intptr_t` (64-bit on Win64), but the result was stored in an `int`, truncating the handle; the subsequent `_findnext`/`_findclose` then operated on a corrupted pointer. The fault was memory-layout dependent (it vanished under a debugger), i.e. a latent bug exposed only by the 64-bit link. Fixed by declaring the find handle as `intptr_t` in `FileTable.cpp` (`FileExists`), `NFS2Prog.cpp`, and both `NFS3Prog.cpp` functions. This affected **directory listing** — a core Kodi operation — so it is as important as the read-path work.
+
+Runtime verification (MinGW g++ 15.2.0, `make`, then a hand-rolled RPC client over both TCP and UDP): MOUNT returns `auth_flavors=[1]`; FSINFO reports `rtmax` 512 KiB (TCP) / 32 KiB (UDP) and `maxfilesize` 2⁶³−1; GETATTR, LOOKUP, READDIR, READDIRPLUS all return correct type/size/attributes; READ streams a 5 MiB file bit-exact (sha256 matches) with correct `eof`; and a 2.42 GiB file reads correctly at a 2.6 GB offset (the >2 GiB path). 100/100 READDIR calls stayed up after the handle fix.
+
+### Open note: mount table never expires
+
+`MOUNT` entries are only removed by `UMNT`. A client that disappears without unmounting leaves its slot; after `MOUNT_NUM_MAX` (100) such entries, further mounts are refused with `MNT3ERR_ACCES`. Pre-existing design limitation (documented in the README). Not on the steady-state Kodi read path, but worth an expiry/UMNTALL improvement later.
 
 ## 0. Classification key
 
