@@ -857,7 +857,7 @@ nfsstat3 CNFS3Prog::ProcedureREADDIR(void)
 	bool valueFollows;
 	nfsstat3 stat;
 	char filePath[MAXPATHLEN];
-	int handle;
+	intptr_t handle;
 	struct _finddata_t fileinfo;
 	unsigned int entries;
 	bool partialDir;
@@ -960,7 +960,7 @@ nfsstat3 CNFS3Prog::ProcedureREADDIRPLUS(void)
 	bool valueFollows;
 	nfsstat3 stat;
 	char filePath[MAXPATHLEN];
-	int handle;
+	intptr_t handle;
 	struct _finddata_t fileinfo;
 	unsigned int entries;
 	bool partialDir;

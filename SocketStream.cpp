@@ -89,6 +89,48 @@ unsigned int CSocketStream::GetSize(void)
 	return m_nInBufferSize - m_nInBufferIndex;  //number of bytes of rest data in the input buffer
 }
 
+unsigned char *CSocketStream::GetInputTail(void)
+{
+	return m_pInBuffer + m_nInBufferSize;  //where the next recv() should append
+}
+
+unsigned int CSocketStream::GetInputSpace(void)
+{
+	return MAXDATA - m_nInBufferSize;  //bytes still free in the input buffer
+}
+
+void CSocketStream::AddInputSize(unsigned int nSize)
+{
+	m_nInBufferSize += nSize;  //bytes appended at the tail
+}
+
+void CSocketStream::CompactInput(void)
+{
+	if (m_nInBufferIndex > 0)  //drop already-consumed bytes
+	{
+		if (m_nInBufferIndex < m_nInBufferSize)
+			memmove(m_pInBuffer, m_pInBuffer + m_nInBufferIndex, m_nInBufferSize - m_nInBufferIndex);
+		m_nInBufferSize -= m_nInBufferIndex;
+		m_nInBufferIndex = 0;
+	}
+}
+
+bool CSocketStream::HasCompleteRecord(void)
+{
+	unsigned int avail, len;
+	unsigned char *p;
+
+	avail = m_nInBufferSize - m_nInBufferIndex;
+	if (avail < 4)
+		return false;
+	p = m_pInBuffer + m_nInBufferIndex;
+	/* RPC record marking: big-endian 32-bit header, high bit = last fragment,
+	 * low 31 bits = number of bytes that follow the header. */
+	len = ((unsigned int)p[0] << 24) | ((unsigned int)p[1] << 16) | ((unsigned int)p[2] << 8) | (unsigned int)p[3];
+	len &= 0x7FFFFFFF;
+	return avail >= 4 + len;
+}
+
 void CSocketStream::Write(void *pData, unsigned int nSize)
 {
 	if (m_nOutBufferIndex + nSize > MAXDATA)  //over the size of output buffer

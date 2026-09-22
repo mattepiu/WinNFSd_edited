@@ -15,6 +15,7 @@ public:
 	void Close(void);
 	void Send(void);
 	bool Active(void);
+	bool HasCompleteRecord(void);
 	char *GetRemoteAddress(void);
 	int GetRemotePort(void);
 	IInputStream *GetInputStream(void);

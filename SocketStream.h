@@ -19,6 +19,11 @@ public:
 	unsigned int Read8(unsigned __int64 *pnValue);
 	unsigned int Skip(unsigned int nSize);
 	unsigned int GetSize(void);
+	unsigned char *GetInputTail(void);
+	unsigned int GetInputSpace(void);
+	void AddInputSize(unsigned int nSize);
+	void CompactInput(void);
+	bool HasCompleteRecord(void);
 	void Write(void *pData, unsigned int nSize);
 	void Write(unsigned long nValue);
 	void Write8(unsigned __int64 nValue);

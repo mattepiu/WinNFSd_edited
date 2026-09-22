@@ -41,6 +41,14 @@ void CSocket::Open(SOCKET socket, ISocketListener *pListener, struct sockaddr_in
 		m_RemoteAddr = *pRemoteAddr;  //remote address
 	if (m_Socket != INVALID_SOCKET)
 	{
+		if (m_nType == SOCK_STREAM)
+		{
+			/* NFS request/response traffic is many small messages; Nagle would
+			 * add latency by holding a small reply until earlier data is ACKed
+			 * (and interacts badly with the client's delayed ACK). Disable it. */
+			int nNoDelay = 1;
+			setsockopt(m_Socket, IPPROTO_TCP, TCP_NODELAY, (const char *)&nNoDelay, sizeof(nNoDelay));
+		}
 		m_bActive = true;
 		m_hThread = (HANDLE)_beginthreadex(NULL, 0, ThreadProc, this, 0, &id);  //begin thread
 	}
@@ -100,6 +108,11 @@ bool CSocket::Active(void)
 	return m_bActive;  //thread is active or not
 }
 
+bool CSocket::HasCompleteRecord(void)
+{
+	return m_SocketStream.HasCompleteRecord();
+}
+
 char *CSocket::GetRemoteAddress(void)
 {
 	return inet_ntoa(m_RemoteAddr.sin_addr);
@@ -128,17 +141,37 @@ void CSocket::Run(void)
 	for (;;)
 	{
 		if (m_nType == SOCK_STREAM)
-			nBytes = recv(m_Socket, (char *)m_SocketStream.GetInput(), m_SocketStream.GetBufferSize(), 0);
-		else if (m_nType == SOCK_DGRAM)
-			nBytes = recvfrom(m_Socket, (char *)m_SocketStream.GetInput(), m_SocketStream.GetBufferSize(), 0, (struct sockaddr *)&m_RemoteAddr, &nSize);
-		if (nBytes > 0)
 		{
-			m_SocketStream.SetInputSize(nBytes);  //bytes received
-			if (m_pListener != NULL)
-				m_pListener->SocketReceived(this);  //notify listener
+			/*
+			 * TCP is a byte stream: a single RPC message may be split across
+			 * recv() calls, or several may arrive coalesced. Accumulate bytes
+			 * until at least one complete record is buffered before dispatching;
+			 * the RPC server consumes only complete records and leaves any
+			 * partial tail for the next iteration.
+			 */
+			m_SocketStream.CompactInput();  //drop bytes already consumed
+			if (!m_SocketStream.HasCompleteRecord())
+			{
+				if (m_SocketStream.GetInputSpace() == 0)
+					break;  //buffer full with no complete record: give up on this connection
+				nBytes = recv(m_Socket, (char *)m_SocketStream.GetInputTail(), m_SocketStream.GetInputSpace(), 0);
+				if (nBytes <= 0)
+					break;
+				m_SocketStream.AddInputSize(nBytes);
+				if (!m_SocketStream.HasCompleteRecord())
+					continue;  //need more bytes to finish this record
+			}
 		}
 		else
-			break;
+		{
+			/* One datagram is exactly one RPC message. */
+			nBytes = recvfrom(m_Socket, (char *)m_SocketStream.GetInput(), m_SocketStream.GetBufferSize(), 0, (struct sockaddr *)&m_RemoteAddr, &nSize);
+			if (nBytes <= 0)
+				break;
+			m_SocketStream.SetInputSize(nBytes);  //bytes received
+		}
+		if (m_pListener != NULL)
+			m_pListener->SocketReceived(this);  //notify listener
 	}
 	m_bActive = false;
 }

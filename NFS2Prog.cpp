@@ -289,7 +289,7 @@ void CNFS2Prog::ProcedureREADDIR(void)
 {
 	unsigned char opaque[3] = {0, 0, 0};
 	char *path, filePath[MAXPATHLEN + 1];
-	int handle;
+	intptr_t handle;
 	struct _finddata_t fileinfo;
 	unsigned long count;
 	unsigned int nLen;

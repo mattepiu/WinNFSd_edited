@@ -80,6 +80,10 @@ void CRPCServer::SocketReceived(CSocket *pSocket)
 	pInStream = pSocket->GetInputStream();
 	while (pInStream->GetSize() > 0)
 	{
+		/* For TCP, only dispatch once a whole RPC record is buffered; a partial
+		 * record is left for the next recv() (see CSocket::Run). */
+		if (pSocket->GetType() == SOCK_STREAM && !pSocket->HasCompleteRecord())
+			break;
 		nResult = Process(pSocket->GetType(), pInStream, pSocket->GetOutputStream(), pSocket->GetRemoteAddress());  //process input data
 		pSocket->Send();  //send response
 		if (nResult != PRC_OK || pSocket->GetType() == SOCK_DGRAM)

@@ -139,6 +139,7 @@ The read path is tuned for a mediacenter client that streams long files with tho
 - **Per-transport read size.** FSINFO advertises `rtmax` = 512 KiB over TCP (the default Kodi/libnfs/kernel transport) and 32 KiB over UDP (RFC 1813 §3.3.19 permits a per-transport value). Larger TCP reads mean far fewer round trips while streaming; UDP stays small so a reply is never a huge, fragmentation-prone datagram. READ clamps any client request to the advertised maximum, so a misbehaving client can neither exhaust memory nor overflow the 1 MiB socket buffer.
 - **Correct large reads.** READ uses 64-bit file offsets (`SetFilePointerEx`) and `_stat64` for attributes, so media files larger than 2/4 GiB seek, stream, and report their size correctly.
 - **Reliable TCP replies.** The socket send path loops until the whole reply is transmitted, so a large READ response can never be silently truncated by a partial `send()`.
+- **Robust TCP framing.** The receive path accumulates a byte-stream message until a complete RPC record (record mark + declared length) is buffered before dispatching, so a request split across `recv()` calls is reassembled instead of garbling the stream. `TCP_NODELAY` is set on accepted connections to avoid Nagle/delayed-ACK latency on the small request/response exchanges.
 
 ## Troubleshooting
 

@@ -206,7 +206,7 @@ void CFileTable::PutItemInCache(FILE_ITEM *pItem)
 
 bool FileExists(char *path)
 {
-	int handle;
+	intptr_t handle;
 	struct _finddata_t fileinfo;
 
 	handle = _findfirst(path, &fileinfo);
